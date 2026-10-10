@@ -122,6 +122,76 @@ class MultiTrialHysteresisDataset(Dataset):
         return x_seq, f_seq, tgt
 
 
+class MultiTrialPhysDataset(Dataset):
+    """v3 多 trial 物理数据集：Soft-Play 特征 + 物理上下文
+
+    相对 MultiTrialHysteresisDataset 的 v3 改动：
+    - Soft-Play 阈值按逐 trial dz_scale=F0/F0_med 锚定（式4-19 b∝F0）
+    - 额外提供物理上下文序列 p_seq (T,3)=[branch, hold, f0_n]
+    - 额外提供端点物理状态 p_end=[x_eff, branch, g, hold, x_line]（目标时刻取值）
+    - __getitem__ 返回 5 元组（供 PIplusGRUv3 残差融合）
+
+    Args:
+        trials: List[(X, y, F)]（v3 三元组）
+        phys_list: build_phys_list 输出，与 trials 一一对应
+        window_size: 滑窗长度
+        soft_play_module: SoftPlay 模块（阈值锚定用 r/β）
+    """
+    def __init__(self, trials, phys_list, window_size, soft_play_module, refresh=True):
+        self.trials = trials
+        self.phys = phys_list
+        self.w = window_size
+        self.soft_play = soft_play_module
+        self.feats_per_trial = []  # List[(T_trial, 30)]
+
+        # 预计算每个 trial 的窗口索引（与 v2 相同：stride=1，不跨段）
+        self.window_index = []  # List[(trial_idx, start_in_trial)]
+        for t_idx, trial in enumerate(trials):
+            n_win = max(0, len(trial[0]) - window_size)
+            for s in range(n_win):
+                self.window_index.append((t_idx, s))
+
+        self.n_samples = len(self.window_index)
+        if refresh:
+            self.refresh_features()
+
+    def refresh_features(self):
+        """用当前 r/β 重新计算所有 trial 的 Soft-Play 特征（阈值按 dz_scale 锚定）"""
+        self.feats_per_trial = []
+        with torch.no_grad():
+            for i, trial in enumerate(self.trials):
+                x = torch.as_tensor(trial[0], dtype=torch.float32).unsqueeze(0)  # (1, T, 3)
+                feats = self.soft_play(x, dz_scale=self.phys[i]["dz_scale"])     # (1, T, 30)
+                self.feats_per_trial.append(feats.squeeze(0).detach())
+
+    def __len__(self):
+        return self.n_samples
+
+    def __getitem__(self, idx):
+        """返回 5 元组:
+        x_seq: (w, 3)  原始输入 [τ_m, q_m, q̇_m]
+        f_seq: (w, 30) Soft-Play 迟滞特征（阈值已按 F0 锚定）
+        p_seq: (w, 3)  物理上下文 [branch, hold, f0_n]
+        p_end: (5,)    端点物理状态 [x_eff, branch, g, hold, x_line]（目标时刻 s+w）
+        tgt:   (1,)    τ_l
+        """
+        trial_idx, s = self.window_index[idx]
+        X_t, y_t, _ = self.trials[trial_idx]
+        ph = self.phys[trial_idx]
+        e = s + self.w  # 目标时刻索引
+
+        x_seq = torch.as_tensor(X_t[s:s + self.w], dtype=torch.float32)
+        f_seq = self.feats_per_trial[trial_idx][s:s + self.w]
+        p_seq = torch.as_tensor(ph["p_seq"][s:s + self.w], dtype=torch.float32)
+        p_end = torch.tensor(
+            [float(ph["x_eff"][e]), float(ph["branch"][e]), float(ph["g"]),
+             float(ph["hold"][e]), float(ph["x"][e])],
+            dtype=torch.float32,
+        )
+        tgt = torch.as_tensor(y_t[e], dtype=torch.float32).unsqueeze(-1)
+        return x_seq, f_seq, p_seq, p_end, tgt
+
+
 class SoftPlayUpdateDataset(Dataset):
     """用于 r/β 端到端梯度更新的小批量数据集
     与 HysteresisDataset 不同：特征不预缓存，前向时实时算（保留反传图）

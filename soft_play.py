@@ -134,9 +134,12 @@ class SoftPlay(nn.Module):
         """正的平滑系数 β"""
         return F.softplus(self.raw_beta)
 
-    def forward(self, x):
+    def forward(self, x, dz_scale=None):
         """逐通道 Soft-Play 计算
         x: (B, T, C)
+        dz_scale: v3 阈值锚定比例（标量，逐 trial = F0/F0_med）。
+            物理依据：式(4-19) 截距 b ∝ F0，迟滞半宽 g 随预紧力线性缩放，
+            故阈值 r ← r·dz_scale 把 Soft-Play 死区锚定到物理死区。
         返回: (B, T, C*N)
         """
         B, T, C = x.shape
@@ -145,6 +148,8 @@ class SoftPlay(nn.Module):
         # 取出参数
         r = self.r.to(x.dtype)         # (C*N,)
         beta = self.beta.to(x.dtype)
+        if dz_scale is not None:
+            r = r * torch.as_tensor(float(dz_scale), dtype=x.dtype, device=x.device)
         r = r.view(C, self.n_ops)      # (C, N)
 
         # 对每个通道独立计算 Soft-Play，再拼接

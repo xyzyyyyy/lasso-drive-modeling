@@ -75,6 +75,43 @@ SOFTPLAY_UPDATE_BATCH = 4096  # r/β 更新时使用的小批量样本数
 GRAD_CLIP_NORM = 5.0
 
 # ============================================================
+# 第三版（v3）：白箱物理主干 + PI+GRU 残差 + 物理约束
+# ============================================================
+# 力传感器列（Load Cell1/2 Force, N）——逐 trial F0 估计的数据源
+FORCE_COLS = [9, 10]
+
+# 物理约束损失权重
+LAMBDA_BOUND = 0.1         # λ1: 边界约束（预测须落在加载/卸载线之间，式4-19/4-23）
+LAMBDA_DEADZONE = 0.5      # λ2: 死区保持约束（hold 窗残差→0，直击换向 MAXE 病灶）
+LAMBDA_ENERGY = 0.05       # λ3: 耗散约束（迟滞环面积符号，仅 r/β/γ 更新阶段）
+
+# λ warmup：前 3 epoch 纯 MSE，epoch 10 线性升至全权重
+PHYS_WARMUP_EPOCHS = 3
+PHYS_WARMUP_FULL = 10
+
+# v3 训练超参（残差学习起点为标定白箱，用更小 lr + 更长耐心）
+# 第一轮教训：best val 出现在 epoch 2，后续波谷（epoch 11-12，0.295）距其仅
+# 差 0.4% 时 patience 15 已耗尽 → 模型欠训练（残差头只训了 3 个 epoch）。
+# patience 提至 30（约 +2.5h），确保 warmup（epoch 10）后仍有充分改进机会。
+LR_V3 = 3e-4
+EARLY_STOP_PATIENCE_V3 = 30
+# 第三轮（v3.1）：残差头提速 + 余弦衰减。第二轮证明 patience 不是瓶颈
+# （30 epoch 未超 epoch2 的 0.2938，v2 best 也是 epoch3/val 0.2930——共同
+# 域漂移天花板）；差异在于 v3 的 best 存档时残差头只训了 2 epoch（LR 3e-4、
+# fc2 零初始化），而 v2 的 best 是 LR 1e-3 充分训练的 → 残差头 LR 提至 1e-3
+# （与 v2 相同），余弦衰减至 1e-4；r/β/γ 物理参数仍小步慢调不变。
+LR_V3_MAIN = 1e-3
+LR_V3_MIN = 1e-4
+
+# v3 输出文件名
+BEST_MODEL_V3_PATH = os.path.join(OUTPUT_DIR, "best_pi_gru_v3.pth")
+FINAL_MODEL_V3_PATH = os.path.join(OUTPUT_DIR, "final_pi_gru_v3.pth")
+LOSS_PLOT_V3_PATH = os.path.join(OUTPUT_DIR, "training_loss_v3.png")
+PREDICTION_PLOT_V3_PATH = os.path.join(OUTPUT_DIR, "prediction_vs_truth_v3.png")
+HYSTERESIS_PLOT_V3_PATH = os.path.join(OUTPUT_DIR, "hysteresis_loop_v3.png")
+PHYS_STATS_CSV_PATH = os.path.join(OUTPUT_DIR, "physics_stats.csv")
+
+# ============================================================
 # 输出文件名
 # ============================================================
 BEST_MODEL_PATH = os.path.join(OUTPUT_DIR, "best_pi_gru.pth")

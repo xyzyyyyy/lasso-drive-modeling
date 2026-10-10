@@ -161,6 +161,41 @@ def load_trials(csv_path, input_cols, target_col, dtype=np.float32):
     return trials
 
 
+def load_trials_extended(csv_path, input_cols, target_col, force_cols, dtype=np.float32):
+    """v3：按 trial 检测并加载 CSV 数据（含力传感器列）
+
+    力传感列用于逐 trial 预紧力 F0 估计（式(4-16)：τ_m≈0 静止段两绳各≈F0），
+    是物理白箱分支进入数据模型的桥梁。
+
+    返回: trials: List[(X_trial, y_trial, F_trial)]
+          X_trial (T,3)=[τ_m,q_m,q̇_m]，y_trial (T,)=τ_l，
+          F_trial (T,2)=[Load Cell1 Force, Load Cell2 Force] (N)
+    """
+    import pandas as pd
+    print(f"加载 CSV (trial模式+v3力列): {csv_path}")
+    df = pd.read_csv(csv_path, dtype=dtype)
+    time_col = df.iloc[:, 0].values.astype(dtype)
+    X_all = df.iloc[:, input_cols].values.astype(dtype)
+    y_all = df.iloc[:, target_col].values.astype(dtype)
+    F_all = df.iloc[:, force_cols].values.astype(dtype)
+
+    # 检测 trial 边界（Time 列单调性）
+    diffs = np.diff(time_col)
+    boundary_idx = np.where(diffs < 0)[0]
+
+    starts = [0] + (boundary_idx + 1).tolist()
+    ends = boundary_idx.tolist() + [len(time_col) - 1]
+
+    trials = []
+    for i, (s, e) in enumerate(zip(starts, ends)):
+        trials.append((X_all[s:e+1], y_all[s:e+1], F_all[s:e+1]))
+        if i < 5 or i >= len(trials) - 2:
+            print(f"  Trial {i}: rows {s}-{e}, length={e-s+1}")
+
+    print(f"  共检测到 {len(trials)} 个独立 trial")
+    return trials
+
+
 # ============================================================
 # 数据切分
 # ============================================================
@@ -187,7 +222,7 @@ def split_by_trial(trials, val_ratio=0.2, seed=42):
     保证同一 trial 的所有样本不跨集合，防止数据泄漏。
 
     Args:
-        trials: List[(X, y)]
+        trials: List[(X, y)] 或 List[(X, y, F)]（v3 三元组）
         val_ratio: 验证集 trial 占比
         seed: 随机种子
 
@@ -203,22 +238,23 @@ def split_by_trial(trials, val_ratio=0.2, seed=42):
     tr_trials = shuffled[n_val_trials:]
 
     print(f"按 trial 分组切分: 训练 trial={len(tr_trials)}, 验证 trial={len(val_trials)}")
-    print(f"  训练样本总量: {sum(len(x) for x, _ in tr_trials)}")
-    print(f"  验证样本总量: {sum(len(x) for x, _ in val_trials)}")
+    print(f"  训练样本总量: {sum(len(t[0]) for t in tr_trials)}")
+    print(f"  验证样本总量: {sum(len(t[0]) for t in val_trials)}")
     return tr_trials, val_trials
 
 
 def trials_to_arrays(trials):
     """把 trial 列表合并为整段数组（保留各段独立 X/y）
     注意：不跨越段边界——不同 trial 之间是独立段
+    兼容 (X, y) 二元组与 (X, y, F) 三元组（v3）
     返回: (X_flat, y_flat, boundaries)
     """
-    Xs = np.concatenate([x for x, _ in trials], axis=0)
-    ys = np.concatenate([y for _, y in trials], axis=0)
+    Xs = np.concatenate([t[0] for t in trials], axis=0)
+    ys = np.concatenate([t[1] for t in trials], axis=0)
     # boundaries: 每个 trial 的起始索引
     boundaries = [0]
-    for x, _ in trials:
-        boundaries.append(boundaries[-1] + len(x))
+    for t in trials:
+        boundaries.append(boundaries[-1] + len(t[0]))
     return Xs, ys, boundaries
 
 
